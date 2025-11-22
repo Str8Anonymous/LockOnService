@@ -1,0 +1,5 @@
+{
+    "stylua.targetReleaseVersion": "latest",
+    "luau-lsp.sourcemap.generatorCommand": "",
+    "luau-lsp.sourcemap.rojoPath": "C:/Users/Madma/.aftman/bin/rojo.exe"
+}
