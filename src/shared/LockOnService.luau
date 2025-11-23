@@ -6,12 +6,11 @@ local LockOnService = {}
 
 -- // CONSTANTS \\ --
 local SMOOTHNESS = 8 -- Determines how fast the camera moves to its target. (Higher is faster).
-local EXIT_SMOOTHNESS = 20 -- How fast the camera blends back to default.
 local SIDE_DISPLACEMENT = 0 -- How far to the right the camera is.
 local CAMERA_HEIGHT = 2.5 -- How high the camera is from the character's root part.
 local CAMERA_DISTANCE = 8 -- How far back the camera is.
 local AUTO_UNLOCK_DISTANCE = 50 -- The max distance in studs before automatically unlocking.
-local MAX_TRANSITION_TIME = 0.1 -- Max time to wait for transition out to finish.
+local MAX_TRANSITION_TIME = 0.2 -- Max time to wait for transition out to finish.
 
 -- // STATE \\ --
 local transitionStartTime: number = 0
@@ -24,49 +23,43 @@ local camera = workspace.CurrentCamera
 
 -- // PRIVATE HELPERS \\ --
 
---- Handles the camera logic when locked onto a target.
---- @param rootPart BasePart The player's HumanoidRootPart.
---- @param currentTarget BasePart The part to lock onto.
---- @return CFrame The ideal CFrame for the camera to look at.
-function LockOnService._handleLockOn(rootPart: BasePart, currentTarget: BasePart): CFrame
-	return LockOnService._getIdealCFrame(rootPart, currentTarget)
+--- Figures out where the camera should be while locked onto a target.
+--- @param rootPart BasePart The player's HumanoidRootPart
+--- @param targetPart BasePart The part the camera should focus on
+--- @return CFrame The CFrame the camera should move toward
+function LockOnService._computeLockedCFrame(rootPart: BasePart, targetPart: BasePart): CFrame
+	if not rootPart or not targetPart then
+		return CFrame.new()
+	end
+
+	local rootPosition = rootPart.Position
+	local targetPosition = targetPart.Position
+
+	local lookAtCFrame = CFrame.lookAt(rootPosition, targetPosition)
+
+	local offsetVector = Vector3.new(SIDE_DISPLACEMENT, CAMERA_HEIGHT, CAMERA_DISTANCE)
+
+	local goalPosition = lookAtCFrame:PointToWorldSpace(offsetVector)
+
+	return CFrame.lookAt(goalPosition, targetPosition)
 end
 
---- Handles the camera logic when transitioning back to the default camera.
---- @param rootPart BasePart The player's HumanoidRootPart.
---- @return CFrame? The ideal CFrame, or nil if the transition is finished.
-function LockOnService._handleTransitionOut(rootPart: BasePart): CFrame?
-	local idealCFrame: CFrame
-
-	-- Restore relative CFrame if it exists, otherwise use default offset
+--- Figures out the camera position used when leaving lock on mode.
+--- Uses the saved camera offset if available.
+--- @param rootPart BasePart The player's HumanoidRootPart
+--- @return CFrame The CFrame the camera should move toward during transitio
+function LockOnService._computeResetCFrame(rootPart: BasePart): CFrame
 	if savedRelativeCFrame then
-		idealCFrame = rootPart.CFrame:ToWorldSpace(savedRelativeCFrame)
-	else
-		local offset = CFrame.new(SIDE_DISPLACEMENT, CAMERA_HEIGHT, CAMERA_DISTANCE)
-		idealCFrame = rootPart.CFrame * offset
+		return rootPart.CFrame:ToWorldSpace(savedRelativeCFrame)
 	end
 
-	local distance = (camera.CFrame.Position - idealCFrame.Position).Magnitude
-	local timeElapsed = os.clock() - transitionStartTime
-
-	-- checking if distance or if time has elapsed
-	if distance < 0.5 or timeElapsed > MAX_TRANSITION_TIME then
-		if stepConnection then
-			stepConnection:Disconnect()
-			stepConnection = nil
-		end
-
-		-- Clean up state
-		savedRelativeCFrame = nil
-		camera.CameraType = Enum.CameraType.Custom
-		return nil
-	end
-
-	return idealCFrame
+	local offset = CFrame.new(SIDE_DISPLACEMENT, CAMERA_HEIGHT, CAMERA_DISTANCE)
+	return rootPart.CFrame * offset
 end
 
---- The main update function that runs every frame on RenderStepped.
---- Decides whether to handle locking on or transitioning out.
+--- Runs every RenderStepped and updates the camera based on the current state.
+--- This handles both lock on mode and the transition out.
+--- @param dt number The delta time for the current frame
 function LockOnService._updateCamera(dt: number)
 	local character = player.Character
 	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
@@ -84,7 +77,7 @@ function LockOnService._updateCamera(dt: number)
 	end
 
 	local idealCFrame: CFrame?
-	local currentSmoothness = SMOOTHNESS -- DEFAULTS to normal smoothness
+	local alpha: number
 
 	-- Deciding which state we are going to handle based on if we have target ect.
 	if target and target.Parent then
@@ -96,43 +89,40 @@ function LockOnService._updateCamera(dt: number)
 			LockOnService.stopLockOn()
 			return
 		end
-		idealCFrame = LockOnService._handleLockOn(rootPart, target)
+		idealCFrame = LockOnService._computeLockedCFrame(rootPart, target)
+		alpha = 1 - math.exp(-SMOOTHNESS * dt)
 	else
-		idealCFrame = LockOnService._handleTransitionOut(rootPart)
-		currentSmoothness = EXIT_SMOOTHNESS
+		idealCFrame = LockOnService._computeResetCFrame(rootPart)
+
+		local timeElapsed = os.clock() - transitionStartTime
+		local remainingTime = MAX_TRANSITION_TIME - timeElapsed
+
+		-- Checking if remaining time is <= dt
+		if remainingTime <= dt then
+			-- Setting alpha to 1 then disconnecting the connection and clearing saved values and reseting camera
+			alpha = 1
+			if stepConnection then
+				stepConnection:Disconnect()
+				stepConnection = nil
+			end
+
+			savedRelativeCFrame = nil
+			camera.CameraType = Enum.CameraType.Custom
+		else
+			alpha = dt / remainingTime
+		end
 	end
 
 	-- Moves camera if we have a CFrame
 	if idealCFrame then
-		local alpha = 1 - math.exp(-currentSmoothness * dt)
 		camera.CFrame = camera.CFrame:Lerp(idealCFrame, alpha)
 	end
-end
-
---- Calculates the ideal world CFrame for the camera based on the target.
---- @param rootPart BasePart The player's HumanoidRootPart.
---- @param targetPart BasePart The target part to look at.
---- @return CFrame The calculated goal CFrame.
-function LockOnService._getIdealCFrame(rootPart: BasePart, targetPart: BasePart): CFrame
-	if not rootPart or not targetPart then
-		return CFrame.new()
-	end
-
-	local rootPosition = rootPart.Position
-	local targetPosition = targetPart.Position
-
-	local lookAtCFrame = CFrame.lookAt(rootPosition, targetPosition)
-
-	local offsetVector = Vector3.new(SIDE_DISPLACEMENT, CAMERA_HEIGHT, CAMERA_DISTANCE)
-
-	local goalPosition = lookAtCFrame:PointToWorldSpace(offsetVector)
-
-	return CFrame.lookAt(goalPosition, targetPosition)
 end
 
 -- // PUBLIC API \\ --
 
 --- Locks the camera onto the given part.
+--- Returns true if the lock on starts successfully.
 --- @param part BasePart The target to lock onto.
 --- @return boolean Whether the lock on succeeded or not.
 function LockOnService.lockOn(part: BasePart): boolean
@@ -172,13 +162,14 @@ function LockOnService.lockOn(part: BasePart): boolean
 	return true
 end
 
---- Resets the current target and begins the camera transition out.
+--- Stops the current lock on and starts transitioning the camera back.
 function LockOnService.stopLockOn()
 	target = nil -- Signals the update loop to begin the transition.
 	transitionStartTime = os.clock()
 end
 
---- Gets the currently locked target
+--- Gets the current lock on target if one exists.
+--- @return BasePart? The part that is currently locked on or nil
 function LockOnService.getLockedOn(): BasePart?
 	return target
 end
